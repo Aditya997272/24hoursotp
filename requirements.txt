@@ -1,4 +1,6 @@
-flask
-razorpay
-python-dotenv
-mysql-connector-python
+python-telegram-bot==20.7
+mysql-connector-python==9.0.0
+requests==2.32.3
+python-dotenv==1.0.1
+razorpay==1.4.1
+flask==3.0.3
