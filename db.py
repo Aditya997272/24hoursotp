@@ -1,21 +1,45 @@
-import mysql.connector
+# db.py
+import os
 import logging
 from datetime import datetime
-from config import DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+from dotenv import load_dotenv
+
+load_dotenv()  # .env फाईल लोड करतो (लोकल टेस्टिंगसाठी)
 
 logger = logging.getLogger(__name__)
+
+# ================= DATABASE CONFIG =================
+DB_TYPE = os.getenv("DB_TYPE", "mysql")  # Render वर "postgres" टाक, लोकलसाठी "mysql"
+
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "3306" if DB_TYPE == "mysql" else "5432")
+DB_NAME = os.getenv("DB_NAME", "db_24hoursotp")
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 # ================= DATABASE CONNECTION =================
 def get_db_connection():
     try:
-        return mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME,
-            raise_on_warnings=True
-        )
-    except mysql.connector.Error as err:
+        if DB_TYPE == "postgres":
+            import psycopg2
+            return psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD
+            )
+        else:  # mysql
+            import mysql.connector
+            return mysql.connector.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                database=DB_NAME,
+                raise_on_warnings=True
+            )
+    except Exception as err:
         logger.error(f"Database connection failed: {err}")
         raise
 
@@ -25,89 +49,170 @@ def setup_database():
     cur = conn.cursor()
 
     # Users Table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id BIGINT PRIMARY KEY,
-        balance DECIMAL(12,2) DEFAULT 0.00,
-        is_blocked TINYINT(1) DEFAULT 0,
-        referred_by BIGINT DEFAULT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
+    if DB_TYPE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            balance DECIMAL(12,2) DEFAULT 0.00,
+            is_blocked BOOLEAN DEFAULT FALSE,
+            referred_by BIGINT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            balance DECIMAL(12,2) DEFAULT 0.00,
+            is_blocked TINYINT(1) DEFAULT 0,
+            referred_by BIGINT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
 
     # Services Table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS services (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        service_name VARCHAR(100) NOT NULL,
-        provider_service_code VARCHAR(50) NOT NULL,
-        country_id INT DEFAULT 22,
-        is_active TINYINT(1) DEFAULT 1,
-        UNIQUE KEY unique_service (service_name)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
+    if DB_TYPE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS services (
+            id SERIAL PRIMARY KEY,
+            service_name VARCHAR(100) NOT NULL,
+            provider_service_code VARCHAR(50) NOT NULL,
+            country_id INTEGER DEFAULT 22,
+            is_active BOOLEAN DEFAULT TRUE,
+            UNIQUE (service_name)
+        );
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS services (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            service_name VARCHAR(100) NOT NULL,
+            provider_service_code VARCHAR(50) NOT NULL,
+            country_id INT DEFAULT 22,
+            is_active TINYINT(1) DEFAULT 1,
+            UNIQUE KEY unique_service (service_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
 
     # Servers Table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS servers (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        service_id INT NOT NULL,
-        server_number INT NOT NULL,
-        price DECIMAL(10,2) NOT NULL,
-        is_active TINYINT(1) DEFAULT 1,
-        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE,
-        UNIQUE KEY unique_server (service_id, server_number)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
+    if DB_TYPE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS servers (
+            id SERIAL PRIMARY KEY,
+            service_id INTEGER NOT NULL,
+            server_number INTEGER NOT NULL,
+            price DECIMAL(10,2) NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE,
+            UNIQUE (service_id, server_number)
+        );
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS servers (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            service_id INT NOT NULL,
+            server_number INT NOT NULL,
+            price DECIMAL(10,2) NOT NULL,
+            is_active TINYINT(1) DEFAULT 1,
+            FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE,
+            UNIQUE KEY unique_server (service_id, server_number)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
 
-    # Orders Table (HeroSMS tracking)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS orders (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        service_id INT NOT NULL,
-        server_id INT NOT NULL,
-        phone_number VARCHAR(20),
-        activation_id VARCHAR(100),
-        status ENUM('PENDING', 'NUMBER_RECEIVED', 'OTP_RECEIVED', 'CANCELLED', 'TIMEOUT', 'FAILED') DEFAULT 'PENDING',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(user_id),
-        FOREIGN KEY (service_id) REFERENCES services(id),
-        FOREIGN KEY (server_id) REFERENCES servers(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
+    # Orders Table
+    if DB_TYPE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            service_id INTEGER NOT NULL,
+            server_id INTEGER NOT NULL,
+            phone_number VARCHAR(20),
+            activation_id VARCHAR(100),
+            status VARCHAR(50) DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (service_id) REFERENCES services(id),
+            FOREIGN KEY (server_id) REFERENCES servers(id)
+        );
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            service_id INT NOT NULL,
+            server_id INT NOT NULL,
+            phone_number VARCHAR(20),
+            activation_id VARCHAR(100),
+            status ENUM('PENDING', 'NUMBER_RECEIVED', 'OTP_RECEIVED', 'CANCELLED', 'TIMEOUT', 'FAILED') DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (service_id) REFERENCES services(id),
+            FOREIGN KEY (server_id) REFERENCES servers(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
 
-    # Transactions (balance in/out)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS transactions (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        amount DECIMAL(12,2) NOT NULL,
-        type ENUM('CREDIT', 'DEBIT') NOT NULL,
-        description VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(user_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
+    # Transactions Table
+    if DB_TYPE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            type VARCHAR(10) NOT NULL,
+            description VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            type ENUM('CREDIT', 'DEBIT') NOT NULL,
+            description VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
 
-    # Wallet Requests (recharge)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS wallet_requests (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        amount DECIMAL(12,2) NOT NULL,
-        screenshot_url VARCHAR(255),
-        status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'PENDING',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(user_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
+    # Wallet Requests Table
+    if DB_TYPE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS wallet_requests (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            screenshot_url VARCHAR(255),
+            status VARCHAR(50) DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS wallet_requests (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            screenshot_url VARCHAR(255),
+            status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
 
     conn.commit()
     conn.close()
-    logger.info("Database setup complete.")
+    logger.info("Database tables setup complete.")
 
 # ================= USER FUNCTIONS =================
 def add_or_get_user(user_id: int, referred_by: int = None):
